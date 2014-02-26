@@ -1,3 +1,9 @@
+flask-login (0.2.9+git1-f3f2ed5bc-1) unstable; urgency=low
+
+  * Upstream merge from git
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Wed, 26 Feb 2014 08:42:21 +0100
+
 flask-login (0.2.6-1) unstable; urgency=low
 
   * Initial release. Closes: 718554
