@@ -1,0 +1,5 @@
+flask-login (0.2.6-1) unstable; urgency=low
+
+  * Initial release. Closes: 718554
+
+ -- Tonnerre LOMBARD <tonnerre@ancient-solutions.com>  Thu, 01 Aug 2013 01:40:50 +0200
