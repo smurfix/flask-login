@@ -2,3 +2,4 @@
 /*.log
 /*.debhelper
 /*.substvars
+/python-flask-login/
