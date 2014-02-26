@@ -70,7 +70,7 @@ REFRESH_MESSAGE = u'Please reauthenticate to access this page.'
 #: reauthenticate.
 REFRESH_MESSAGE_CATEGORY = 'message'
 
-#: The default attribute to retreive the unicode id of the user
+#: The default attribute to retrieve the unicode id of the user
 ID_ATTRIBUTE = 'get_id'
 
 #: Default name of the auth header (``Authorization``)
