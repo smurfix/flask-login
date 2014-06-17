@@ -1,0 +1,5 @@
+/files
+/python-flask-login
+/*.log
+/*.debhelper
+/*.substvars
