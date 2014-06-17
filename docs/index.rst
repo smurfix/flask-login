@@ -159,6 +159,72 @@ If you would like to customize the process further, decorate a function with
         return a_response
 
 
+Login using Authorization header
+================================
+
+.. Caution::
+   This method will be depreciated; use the `~LoginManager.request_loader`
+   below instead.
+
+Sometimes you want to support Basic Auth login using the `Authorization`
+header, such as for api requests. To support login via header you will need
+to provide a `~LoginManager.header_loader` callback. This callback should behave
+the same as your `~LoginManager.user_loader` callback, except that it accepts
+a header value instead of a user id. For example::
+
+    @login_manager.header_loader
+    def load_user_from_header(header_val):
+        if header_val.startswith('Basic '):                                             
+            header_val = header_val.replace('Basic ', '', 1)                                
+        try:                                                                        
+            header_val = base64.b64decode(header_val)                                       
+        except TypeError:                                                     
+            pass
+        return User.query.filter_by(api_key=header_val).first()
+        
+By default the `Authorization` header's value is passed to your
+`~LoginManager.header_loader` callback. You can change the header used with
+the `AUTH_HEADER_NAME` configuration.
+
+
+Custom Login using Request Loader
+=================================
+Sometimes you want to login users without using cookies, such as using header
+values or an api key passed as a query argument. In these cases, you should use
+the `~LoginManager.request_loader` callback. This callback should behave the
+same as your `~LoginManager.user_loader` callback, except that it accepts the
+Flask request instead of a user_id.
+
+For example, to support login from both a url argument and from Basic Auth
+using the `Authorization` header::
+
+    @login_manager.request_loader
+    def load_user_from_request(request):
+
+        # first, try to login using the api_key url arg
+        api_key = request.args.get('api_key')
+        if api_key:
+            user = User.query.filter_by(api_key=api_key).first()
+            if user:
+                return user
+
+        # next, try to login using Basic Auth
+        api_key = request.headers.get('Authorization')
+        if api_key:
+            if api_key.startswith('Basic '):                                             
+                api_key= api_key.replace('Basic ', '', 1)                                
+            try:                                                                        
+                api_key = base64.b64decode(api_key)                                       
+            except TypeError:                                                     
+                pass
+            user = User.query.filter_by(api_key=api_key).first()
+            if user:
+                return user
+
+        # finally, return None if both methods did not login the user
+        return None
+        
+
 Anonymous Users
 ===============
 By default, when a user is not actually logged in, `current_user` is set to
@@ -308,6 +374,16 @@ then the entire session (as well as the remember token if it exists) is
 deleted.
 
 
+Localization
+============
+By default, the `LoginManager` uses ``flash`` to display messages when a user
+is required to log in. These messages are in English. If you require
+localization, set the `localize_callback` attribute of `LoginManager` to a
+function to be called with these messages before they're sent to ``flash``,
+e.g. ``gettext``. This function will be called with the message and its return
+value will be sent to ``flash`` instead.
+
+
 API Documentation
 =================
 This documentation is automatically generated from Flask-Login's source code.
@@ -326,6 +402,8 @@ Configuring Login
    .. rubric:: General Configuration
    
    .. automethod:: user_loader
+   
+   .. automethod:: header_loader
    
    .. automethod:: token_loader
    

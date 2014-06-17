@@ -4,6 +4,8 @@ try:
 except ImportError:
     import unittest
 
+import base64
+import collections
 from datetime import timedelta, datetime
 from contextlib import contextmanager
 
@@ -15,12 +17,14 @@ from flask.ext.login import (LoginManager, UserMixin, AnonymousUserMixin,
                              make_secure_token, current_user, login_user,
                              logout_user, user_logged_in, user_logged_out,
                              user_loaded_from_cookie, user_login_confirmed,
+                             user_loaded_from_header, user_loaded_from_request,
                              user_unauthorized, user_needs_refresh,
                              make_next_param, login_url, login_fresh,
                              login_required, session_protected,
                              fresh_login_required, confirm_login,
                              encode_cookie, decode_cookie,
-                             _user_context_processor)
+                             _secret_key, _user_context_processor,
+                             user_accessed)
 
 
 # be compatible with py3k
@@ -64,6 +68,12 @@ def listen_to(signal):
                     '({0}, {1})'
                 raise AssertionError(msg.format(args, kwargs))
 
+        def assert_heard_none(self, *args, **kwargs):
+            ''' The signal fired no times '''
+            if len(self.heard) >= 1:
+                msg = '{0} signals were fired'.format(len(self.heard))
+                raise AssertionError(msg)
+
     results = _SignalsCaught()
     signal.connect(results.add)
 
@@ -98,15 +108,29 @@ USER_TOKENS = dict((u.get_auth_token(), u) for u in USERS.values())
 
 
 class StaticTestCase(unittest.TestCase):
+
     def test_static_loads_anonymous(self):
         app = Flask(__name__)
         app.static_url_path = '/static'
+        app.secret_key = 'this is a temp key'
         lm = LoginManager()
         lm.init_app(app)
 
         with app.test_client() as c:
             c.get('/static/favicon.ico')
             self.assertTrue(current_user.is_anonymous())
+
+    def test_static_loads_without_accessing_session(self):
+        app = Flask(__name__)
+        app.static_url_path = '/static'
+        app.secret_key = 'this is a temp key'
+        lm = LoginManager()
+        lm.init_app(app)
+
+        with app.test_client() as c:
+            with listen_to(user_accessed) as listener:
+                c.get('/static/favicon.ico')
+                listener.assert_heard_none(app)
 
 
 class InitializationTestCase(unittest.TestCase):
@@ -194,6 +218,25 @@ class LoginTestCase(unittest.TestCase):
         def load_user(user_id):
             return USERS[int(user_id)]
 
+        @self.login_manager.header_loader
+        def load_user_from_header(header_value):
+            if header_value.startswith('Basic '):
+                header_value = header_value.replace('Basic ', '', 1)
+            try:
+                user_id = base64.b64decode(header_value)
+            except TypeError:
+                pass
+            return USERS.get(int(user_id))
+
+        @self.login_manager.request_loader
+        def load_user_from_request(request):
+            user_id = request.args.get('user_id')
+            try:
+                user_id = int(float(user_id))
+            except TypeError:
+                pass
+            return USERS.get(user_id)
+
         @self.app.route('/empty_session')
         def empty_session():
             return unicode(u'modified=%s' % session.modified)
@@ -255,6 +298,44 @@ class LoginTestCase(unittest.TestCase):
             login_user(creeper, force=True)
             self.assertEqual(current_user.name, u'Creeper')
 
+    def test_login_user_with_header(self):
+        user_id = 2
+        user_name = USERS[user_id].name
+        self.login_manager.request_callback = None
+        with self.app.test_client() as c:
+            basic_fmt = 'Basic {0}'
+            decoded = bytes.decode(base64.b64encode(str.encode(str(user_id))))
+            headers = [('Authorization', basic_fmt.format(decoded))]
+            result = c.get('/username', headers=headers)
+            self.assertEqual(user_name, result.data.decode('utf-8'))
+
+    def test_login_invalid_user_with_header(self):
+        user_id = 4
+        user_name = u'Anonymous'
+        self.login_manager.request_callback = None
+        with self.app.test_client() as c:
+            basic_fmt = 'Basic {0}'
+            decoded = bytes.decode(base64.b64encode(str.encode(str(user_id))))
+            headers = [('Authorization', basic_fmt.format(decoded))]
+            result = c.get('/username', headers=headers)
+            self.assertEqual(user_name, result.data.decode('utf-8'))
+
+    def test_login_user_with_request(self):
+        user_id = 2
+        user_name = USERS[user_id].name
+        with self.app.test_client() as c:
+            url = '/username?user_id={user_id}'.format(user_id=user_id)
+            result = c.get(url)
+            self.assertEqual(user_name, result.data.decode('utf-8'))
+
+    def test_login_invalid_user_with_request(self):
+        user_id = 4
+        user_name = u'Anonymous'
+        with self.app.test_client() as c:
+            url = '/username?user_id={user_id}'.format(user_id=user_id)
+            result = c.get(url)
+            self.assertEqual(user_name, result.data.decode('utf-8'))
+
     #
     # Logout
     #
@@ -290,6 +371,24 @@ class LoginTestCase(unittest.TestCase):
             c.get('/secret')
             msgs = get_flashed_messages(category_filter=[expected_category])
             self.assertEqual([expected_message], msgs)
+
+    def test_unauthorized_flash_message_localized(self):
+        def _gettext(msg):
+            if msg == u'Log in!':
+                return u'Einloggen'
+
+        self.login_manager.login_view = '/login'
+        self.login_manager.localize_callback = _gettext
+        self.login_manager.login_message = u'Log in!'
+
+        expected_message = u'Einloggen'
+        expected_category = self.login_manager.login_message_category = 'login'
+
+        with self.app.test_client() as c:
+            c.get('/secret')
+            msgs = get_flashed_messages(category_filter=[expected_category])
+            self.assertEqual([expected_message], msgs)
+        self.login_manager.localize_callback = None
 
     def test_unauthorized_uses_authorized_handler(self):
         @self.login_manager.unauthorized_handler
@@ -403,6 +502,35 @@ class LoginTestCase(unittest.TestCase):
                 c.get('/username')
                 listener.assert_heard_one(self.app, user=notch)
 
+    def test_user_loaded_from_header_fired(self):
+        user_id = 1
+        user_name = USERS[user_id].name
+        self.login_manager.request_callback = None
+        with self.app.test_client() as c:
+            with listen_to(user_loaded_from_header) as listener:
+                headers = [
+                    (
+                        'Authorization',
+                        'Basic %s' % (
+                            bytes.decode(
+                                base64.b64encode(str.encode(str(user_id))))
+                        ),
+                    )
+                ]
+                result = c.get('/username', headers=headers)
+                self.assertEqual(user_name, result.data.decode('utf-8'))
+                listener.assert_heard_one(self.app, user=USERS[user_id])
+
+    def test_user_loaded_from_request_fired(self):
+        user_id = 1
+        user_name = USERS[user_id].name
+        with self.app.test_client() as c:
+            with listen_to(user_loaded_from_request) as listener:
+                url = '/username?user_id={user_id}'.format(user_id=user_id)
+                result = c.get(url)
+                self.assertEqual(user_name, result.data.decode('utf-8'))
+                listener.assert_heard_one(self.app, user=USERS[user_id])
+
     def test_logout_stays_logged_out_with_remember_me(self):
         with self.app.test_client() as c:
             c.get('/login-notch-remember')
@@ -439,6 +567,25 @@ class LoginTestCase(unittest.TestCase):
             c.get('/needs-refresh')
             msgs = get_flashed_messages(category_filter=category_filter)
             self.assertIn(self.login_manager.needs_refresh_message, msgs)
+
+    def test_needs_refresh_flash_message_localized(self):
+        def _gettext(msg):
+            if msg == u'Refresh':
+                return u'Aktualisieren'
+
+        self.login_manager.refresh_view = '/refresh_view'
+        self.login_manager.localize_callback = _gettext
+
+        self.login_manager.needs_refresh_message = u'Refresh'
+        self.login_manager.needs_refresh_message_category = 'refresh'
+        category_filter = [self.login_manager.needs_refresh_message_category]
+
+        with self.app.test_client() as c:
+            c.get('/login-notch-remember')
+            c.get('/needs-refresh')
+            msgs = get_flashed_messages(category_filter=category_filter)
+            self.assertIn(u'Aktualisieren', msgs)
+        self.login_manager.localize_callback = None
 
     def test_needs_refresh_aborts_403(self):
         with self.app.test_client() as c:
@@ -487,6 +634,24 @@ class LoginTestCase(unittest.TestCase):
     #
     # Session Protection
     #
+    def test_session_protection_basic_passes_successive_requests(self):
+        self.app.config['SESSION_PROTECTION'] = 'basic'
+        with self.app.test_client() as c:
+            c.get('/login-notch-remember')
+            username_result = c.get('/username')
+            self.assertEqual(u'Notch', username_result.data.decode('utf-8'))
+            fresh_result = c.get('/is-fresh')
+            self.assertEqual(u'True', fresh_result.data.decode('utf-8'))
+
+    def test_session_protection_strong_passes_successive_requests(self):
+        self.app.config['SESSION_PROTECTION'] = 'strong'
+        with self.app.test_client() as c:
+            c.get('/login-notch-remember')
+            username_result = c.get('/username')
+            self.assertEqual(u'Notch', username_result.data.decode('utf-8'))
+            fresh_result = c.get('/is-fresh')
+            self.assertEqual(u'True', fresh_result.data.decode('utf-8'))
+
     def test_session_protection_basic_marks_session_unfresh(self):
         self.app.config['SESSION_PROTECTION'] = 'basic'
         with self.app.test_client() as c:
@@ -505,6 +670,30 @@ class LoginTestCase(unittest.TestCase):
             with listen_to(session_protected) as listener:
                 c.get('/username', headers=[('User-Agent', 'different')])
                 listener.assert_heard_one(self.app)
+
+    def test_session_protection_basic_skips_when_remember_me(self):
+        self.app.config['SESSION_PROTECTION'] = 'basic'
+
+        with self.app.test_client() as c:
+            c.get('/login-notch-remember')
+            # clear session to force remember me (and remove old session id)
+            self._delete_session(c)
+            # should not trigger protection because "sess" is empty
+            with listen_to(session_protected) as listener:
+                c.get('/username')
+                listener.assert_heard_none(self.app)
+
+    def test_session_protection_strong_skips_when_remember_me(self):
+        self.app.config['SESSION_PROTECTION'] = 'strong'
+
+        with self.app.test_client() as c:
+            c.get('/login-notch-remember')
+            # clear session to force remember me (and remove old session id)
+            self._delete_session(c)
+            # should not trigger protection because "sess" is empty
+            with listen_to(session_protected) as listener:
+                c.get('/username')
+                listener.assert_heard_none(self.app)
 
     def test_permanent_strong_session_protection_marks_session_unfresh(self):
         self.app.config['SESSION_PROTECTION'] = 'strong'
@@ -553,6 +742,41 @@ class LoginTestCase(unittest.TestCase):
                 c.get('/username', headers=[('X-Forwarded-For', '10.1.1.2')])
                 listener.assert_heard_one(self.app)
 
+    def test_session_protection_skip_when_off_and_anonymous(self):
+        with self.app.test_client() as c:
+            # no user access
+            with listen_to(user_accessed) as user_listener:
+                results = c.get('/')
+                user_listener.assert_heard_none(self.app)
+
+            # access user with no session data
+            with listen_to(session_protected) as session_listener:
+                results = c.get('/username')
+                self.assertEqual(results.data.decode('utf-8'), u'Anonymous')
+                session_listener.assert_heard_none(self.app)
+
+            # verify no session data has been set
+            self.assertFalse(session)
+
+    def test_session_protection_skip_when_basic_and_anonymous(self):
+        self.app.config['SESSION_PROTECTION'] = 'basic'
+
+        with self.app.test_client() as c:
+            # no user access
+            with listen_to(user_accessed) as user_listener:
+                results = c.get('/')
+                user_listener.assert_heard_none(self.app)
+
+            # access user with no session data
+            with listen_to(session_protected) as session_listener:
+                results = c.get('/username')
+                self.assertEqual(results.data.decode('utf-8'), u'Anonymous')
+                session_listener.assert_heard_none(self.app)
+
+            # verify no session data has been set other than '_id'
+            self.assertIsNotNone(session.get('_id'))
+            self.assertTrue(len(session) == 1)
+
     #
     # Custom Token Loader
     #
@@ -597,6 +821,24 @@ class LoginTestCase(unittest.TestCase):
 
             result = c.get('/username')
             self.assertEqual(result.data.decode('utf-8'), u'Anonymous')
+
+    #
+    # Lazy Access User
+    #
+    def test_requests_without_accessing_session(self):
+        with self.app.test_client() as c:
+            c.get('/login-notch')
+
+            #no session access
+            with listen_to(user_accessed) as listener:
+                c.get('/')
+                listener.assert_heard_none(self.app)
+
+            #should have a session access
+            with listen_to(user_accessed) as listener:
+                result = c.get('/username')
+                listener.assert_heard_one(self.app)
+                self.assertEqual(result.data.decode('utf-8'), u'Notch')
 
     #
     # View Decorators
@@ -676,7 +918,9 @@ class LoginTestCase(unittest.TestCase):
                              '0f05743a2b617b2625362ab667c0dbdf4c9ec13a')
 
     def test_user_context_processor(self):
-        self.assertEqual(_user_context_processor(), {'current_user': None})
+        with self.app.test_request_context():
+            _ucp = self.app.context_processor(_user_context_processor)
+            self.assertIsInstance(_ucp()['current_user'], AnonymousUserMixin)
 
 
 class TestLoginUrlGeneration(unittest.TestCase):
@@ -740,6 +984,24 @@ class CookieEncodingTestCase(unittest.TestCase):
             self.assertIsNone(decode_cookie(u'no bar'))
 
 
+class SecretKeyTestCase(unittest.TestCase):
+    def setUp(self):
+        self.app = Flask(__name__)
+
+    def test_bytes(self):
+        self.app.config['SECRET_KEY'] = b'\x9e\x8f\x14'
+        with self.app.test_request_context():
+            self.assertEqual(_secret_key(), b'\x9e\x8f\x14')
+
+    def test_native(self):
+        self.app.config['SECRET_KEY'] = '\x9e\x8f\x14'
+        with self.app.test_request_context():
+            self.assertEqual(_secret_key(), b'\x9e\x8f\x14')
+
+    def test_default(self):
+        self.assertEqual(_secret_key('\x9e\x8f\x14'), b'\x9e\x8f\x14')
+
+
 class ImplicitIdUser(UserMixin):
     def __init__(self, id):
         self.id = id
@@ -778,6 +1040,9 @@ class UserMixinTestCase(unittest.TestCase):
 
         self.assertFalse(first == u'1')
         self.assertTrue(first != u'1')
+
+    def test_hashable(self):
+        self.assertTrue(isinstance(UserMixin(), collections.Hashable))
 
 
 class AnonymousUserTestCase(unittest.TestCase):

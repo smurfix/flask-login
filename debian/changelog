@@ -1,3 +1,9 @@
+flask-login (0.2.11.1) unstable; urgency=medium
+
+  * Merge 0.2.11
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Tue, 17 Jun 2014 06:14:02 +0200
+
 flask-login (0.2.6-1) unstable; urgency=low
 
   * Initial release. Closes: 718554
