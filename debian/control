@@ -3,12 +3,30 @@ Maintainer: Tonnerre LOMBARD <tonnerre@ancient-solutions.com>
 Section: python
 Priority: optional
 Build-Depends: python-setuptools (>= 0.6b3), python-all (>= 2.6.6-3),
-	       debhelper (>= 7)
+	       debhelper (>= 7),
+               python3-all,
+               python3-setuptools,
 Standards-Version: 3.9.4
+X-Python-Version: >= 2.7
+X-Python3-Version: >= 3.3
 
 Package: python-flask-login
 Architecture: all
 Depends: ${misc:Depends}, ${python:Depends}
+Description: user session management for Flask
+ Flask-Login provides user session management for Flask. It handles the
+ common tasks of logging in, logging out, and remembering your users'
+ sessions over extended periods of time.
+ .
+ Flask-Login is not bound to any particular database system or permissions
+ model. The only requirement is that your user objects implement a few
+ methods, and that you provide a callback to the extension capable of
+ loading users from their ID.
+Homepage: https://flask-login.readthedocs.org/
+
+Package: python3-flask-login
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends}
 Description: user session management for Flask
  Flask-Login provides user session management for Flask. It handles the
  common tasks of logging in, logging out, and remembering your users'
